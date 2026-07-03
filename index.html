@@ -448,29 +448,37 @@ function fetchWithTimeout(url, ms) {
 }
 
 // 국내주식(KRX) 실시간 시세 — 네이버 증권 폴링 API (지연 없음)
-async function fetchNaverKRX(code) {
-  const base = `https://polling.finance.naver.com/api/realtime/domestic/stock/${code}`;
-  const PROXY_FNS = [
-    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, // allorigins (네이버 CORS 우회 확인됨)
-    u => u,                                                             // 직접
-    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
-    u => `https://thingproxy.freeboard.io/fetch/${u}`,
-  ];
-  for (const proxyFn of PROXY_FNS) {
-    try {
-      const r = await fetchWithTimeout(proxyFn(base), 7000);
-      if (!r.ok) continue;
-      const d = await r.json();
-      const item = d?.datas?.[0];
-      if (!item) continue;
-      const p = parseFloat(String(item.closePrice ?? item.nv ?? '').replace(/,/g, ''));
-      if (p > 0) {
-        console.log(`[주가] ${code} = ${p} (KRW) via 네이버 실시간`);
-        return { price: p, currency: 'KRW' };
-      }
-    } catch(e) { /* 다음 프록시 시도 */ }
-  }
-  return null;
+// 프록시(allorigins) 동시요청 차단 방지: 순차 큐 + 재시도
+let naverChain = Promise.resolve();
+function fetchNaverKRX(code) {
+  const run = async () => {
+    const base = `https://polling.finance.naver.com/api/realtime/domestic/stock/${code}`;
+    const ATTEMPTS = [
+      u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, // 1차
+      u => u,                                                             // 직접
+      u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, // 재시도
+      u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    ];
+    for (const proxyFn of ATTEMPTS) {
+      try {
+        const r = await fetchWithTimeout(proxyFn(base), 10000);
+        if (!r.ok) throw 0;
+        const d = await r.json();
+        const item = d?.datas?.[0];
+        const p = item ? parseFloat(String(item.closePrice ?? item.nv ?? '').replace(/,/g, '')) : NaN;
+        if (p > 0) {
+          console.log(`[주가] ${code} = ${p} (KRW) via 네이버 실시간`);
+          return { price: p, currency: 'KRW' };
+        }
+      } catch(e) { /* 다음 시도 */ }
+      await new Promise(res => setTimeout(res, 400));
+    }
+    return null;
+  };
+  // 순차 실행 (동시 요청 시 프록시 rate-limit 방지)
+  const p = naverChain.then(run, run);
+  naverChain = p.then(() => new Promise(res => setTimeout(res, 300)), () => {});
+  return p;
 }
 
 // 단일 종목 가격 조회 — 국내주식은 네이버 실시간 우선, 그 외/실패 시 Yahoo v8 chart
