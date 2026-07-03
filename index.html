@@ -79,6 +79,7 @@ tbody tr:hover td{background:rgba(59,130,246,.05)}
 .pill-live{background:rgba(16,185,129,.15);color:var(--green)}
 .pill-load{background:rgba(245,158,11,.15);color:var(--yellow)}
 .badge{font-size:10px;background:var(--surface2);border:1px solid var(--border);padding:2px 6px;border-radius:4px;color:var(--muted);display:inline-block;margin-top:2px}
+.badge-manual{color:var(--yellow);border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.1)}
 .divider{height:1px;background:var(--border);margin:22px 0}
 .warn{background:rgba(239,68,68,.08);border:1px solid rgba(239,68,68,.25);color:var(--red);padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:14px}
 .info{background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.25);color:#93c5fd;padding:10px 14px;border-radius:8px;font-size:12px;margin-bottom:14px}
@@ -306,11 +307,12 @@ function submitAdd() {
   if (!name || !ticker || isNaN(qty) || isNaN(avgP) || isNaN(costKRW)) {
     alert('필수 항목(종목명, 티커, 수량, 평균단가, 매수금액)을 모두 입력해주세요.'); return;
   }
-  const h = { name, ticker, qty, avgP, costKRW, cur };
+  const h = { name, ticker, qty, avgP, costKRW, cur, manual: true };
   if (acct) h.acct = acct;
   ENT[ek].holdings.push(h);
   saveData();
   closeModal();
+  renderCurrent();  // 시세 조회 전에도 즉시 표시 (삭제 가능)
   // 새 티커 가격 조회 후 렌더
   fetchOneTicker(ticker).then(info => {
     if (info) ST.prices[ticker] = info;
@@ -321,11 +323,13 @@ function submitAdd() {
 
 function deleteHolding(ek, idx) {
   const h = ENT[ek].holdings[idx];
-  if (!confirm(`"${h.name}" 종목을 삭제하시겠습니까?`)) return;
+  if (!h) return;
+  const tag = h.manual ? ' (수동입력)' : '';
+  if (!confirm(`"${h.name}"${tag} 종목을 삭제하시겠습니까?`)) return;
   ENT[ek].holdings.splice(idx, 1);
   saveData();
   renderCurrent();
-  if (curTab === 0) renderDash();
+  if (curTab !== 0) renderDash();
 }
 
 function editCash(ek, type) {
@@ -429,7 +433,8 @@ async function fetchRate() {
 function calcH(h, prices, rate) {
   const R = rate || 1554.4;
   const pInfo = prices[h.ticker];
-  if (!pInfo) return null;
+  // 시세 조회 실패 시에도 행이 사라지지 않도록 null 값으로 유지 (삭제 가능)
+  if (!pInfo) return { ...h, liveP: null, valKRW: null, pnl: null, pct: null };
   const p = pInfo.price;
   const valKRW = h.cur === 'KRW' ? p * h.qty : p * h.qty * R;
   return { ...h, liveP: p, valKRW, pnl: valKRW - h.costKRW, pct: (valKRW - h.costKRW) / h.costKRW };
@@ -438,9 +443,11 @@ function calcH(h, prices, rate) {
 function calcE(ek, prices, rate) {
   const e = ENT[ek];
   const R = rate || 1554.4;
-  const hs = e.holdings.map(h => calcH(h, prices, rate)).filter(Boolean);
-  const secVal  = hs.reduce((s,h) => s + h.valKRW, 0);
-  const secCost = hs.reduce((s,h) => s + h.costKRW, 0);
+  // idx = ENT[ek].holdings의 실제 인덱스 (삭제 시 인덱스 어긋남 방지)
+  const hs = e.holdings.map((h, idx) => ({ ...calcH(h, prices, rate), idx }));
+  const priced  = hs.filter(h => h.valKRW != null);
+  const secVal  = priced.reduce((s,h) => s + h.valKRW, 0);
+  const secCost = priced.reduce((s,h) => s + h.costKRW, 0);
   const usdKRW  = e.usdCash * R;
   const total   = e.krwCash + usdKRW + secVal;
   const pnl     = secVal - secCost;
@@ -464,6 +471,8 @@ const sgn  = v => v>0 ? '+' : '';
 const cls  = v => v>0 ? 'pos' : v<0 ? 'neg' : '';
 const prc  = (v,c) => v==null ? '-' : c==='USD' ? '$'+v.toFixed(2) : v.toLocaleString('ko-KR')+'원';
 const full = v => v==null ? '-' : Math.round(v).toLocaleString('ko-KR')+'원';
+const manualBadge = h => h.manual ? ' <span class="badge badge-manual">수동</span>' : '';
+const failTxt = '<span style="color:var(--muted);font-size:11px">조회실패</span>';
 
 // ══════════════════════════════════════════════════════
 //  RENDER: DASHBOARD
@@ -506,20 +515,21 @@ function renderDash() {
       <td class="${cls(e.pct)}">${sgn(e.pct)}${pct(e.pct)}</td>
     </tr>`).join('');
 
-  const allHoldings = all.flatMap((e,i) => e.hs.map(h => ({...h, eName:e.name, eIcon:e.icon, eColor:COLORS[i]})));
+  const allHoldings = all.flatMap((e,i) => e.hs.map(h => ({...h, eKey:e.key, eName:e.name, eIcon:e.icon, eColor:COLORS[i]})));
   const holdRows = allHoldings.map(h => `
     <tr>
       <td>
-        <div style="font-weight:500">${h.name}</div>
+        <div style="font-weight:500">${h.name}${manualBadge(h)}</div>
         <span class="badge">${h.ticker}</span>
       </td>
       <td style="color:var(--muted);font-size:12px">${h.eIcon} ${h.eName}</td>
       <td>${h.qty.toLocaleString()}</td>
       <td>${prc(h.avgP, h.cur)}</td>
-      <td style="font-weight:600;color:${h.eColor}">${prc(h.liveP, h.cur)}</td>
+      <td style="font-weight:600;color:${h.eColor}">${h.liveP==null ? failTxt : prc(h.liveP, h.cur)}</td>
       <td>${eok(h.valKRW)}</td>
-      <td class="${cls(h.pnl)}">${sgn(h.pnl)}${eok(h.pnl)}</td>
-      <td class="${cls(h.pct)}">${sgn(h.pct)}${pct(h.pct)}</td>
+      <td class="${cls(h.pnl)}">${h.pnl==null?'-':sgn(h.pnl)+eok(h.pnl)}</td>
+      <td class="${cls(h.pct)}">${h.pct==null?'-':sgn(h.pct)+pct(h.pct)}</td>
+      <td><button class="btn-del" onclick="deleteHolding('${h.eKey}',${h.idx})" title="삭제">🗑</button></td>
     </tr>`).join('');
 
   document.getElementById('c0').innerHTML = `
@@ -584,7 +594,7 @@ function renderDash() {
       <table>
         <thead><tr>
           <th>종목명</th><th>법인</th><th>수량</th><th>평균단가</th>
-          <th>현재가</th><th>평가금액(원화)</th><th>평가손익</th><th>수익률</th>
+          <th>현재가</th><th>평가금액(원화)</th><th>평가손익</th><th>수익률</th><th></th>
         </tr></thead>
         <tbody>${holdRows}</tbody>
       </table>
@@ -600,22 +610,22 @@ function renderEnt(ek) {
   const has  = Object.keys(ST.prices).length > 0;
   const hasAcct = e.holdings.some(h => h.acct);
 
-  const holdRows = e.hs.map((h, idx) => `
+  const holdRows = e.hs.map(h => `
     <tr>
       <td>
-        <div style="font-weight:500">${h.name}</div>
+        <div style="font-weight:500">${h.name}${manualBadge(h)}</div>
         <span class="badge">${h.ticker}</span>
       </td>
       ${hasAcct ? `<td style="color:var(--muted);font-size:11px">${h.acct||'-'}</td>` : ''}
       <td>${h.cur}</td>
       <td>${h.qty.toLocaleString()}</td>
       <td>${prc(h.avgP, h.cur)}</td>
-      <td style="font-weight:600;color:${e.color}">${prc(h.liveP, h.cur)}</td>
+      <td style="font-weight:600;color:${e.color}">${h.liveP==null ? failTxt : prc(h.liveP, h.cur)}</td>
       <td>${eok(h.valKRW)}</td>
       <td>${eok(h.costKRW)}</td>
-      <td class="${cls(h.pnl)}">${sgn(h.pnl)}${eok(h.pnl)}</td>
-      <td class="${cls(h.pct)}">${sgn(h.pct)}${pct(h.pct)}</td>
-      <td><button class="btn-del" onclick="deleteHolding('${ek}',${idx})" title="삭제">🗑</button></td>
+      <td class="${cls(h.pnl)}">${h.pnl==null?'-':sgn(h.pnl)+eok(h.pnl)}</td>
+      <td class="${cls(h.pct)}">${h.pct==null?'-':sgn(h.pct)+pct(h.pct)}</td>
+      <td><button class="btn-del" onclick="deleteHolding('${ek}',${h.idx})" title="삭제">🗑</button></td>
     </tr>`).join('');
 
   const noData = e.hs.length === 0 && has;
@@ -656,7 +666,7 @@ function renderEnt(ek) {
       <div class="stitle">보유 종목 현황</div>
       <button class="btn btn-add-row" onclick="openAddModal('${ek}')">➕ 종목 추가</button>
     </div>
-    ${noData ? `<div class="info">ℹ️ 실시간 가격을 불러오는 중입니다...</div>` : ''}
+    ${noData ? `<div class="info">ℹ️ 보유 종목이 없습니다. [➕ 종목 추가]로 등록하세요.</div>` : ''}
     <div class="tbl-wrap" style="margin-bottom:22px">
       <table>
         <thead><tr>
@@ -664,7 +674,7 @@ function renderEnt(ek) {
           ${hasAcct?'<th>계좌</th>':''}
           <th>통화</th><th>수량</th><th>평균단가</th>
           <th>현재가(실시간)</th><th>평가금액</th><th>매수금액</th>
-          <th>평가손익</th><th>수익률</th><th></th>
+          <th>평가손익</th><th>수익률</th><th>삭제</th>
         </tr></thead>
         <tbody>
           ${holdRows}
