@@ -447,8 +447,41 @@ function fetchWithTimeout(url, ms) {
   return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(tid));
 }
 
-// 단일 종목 가격 조회 — v8 chart API + 4개 프록시 + 2개 Yahoo 호스트
+// 국내주식(KRX) 실시간 시세 — 네이버 증권 폴링 API (지연 없음)
+async function fetchNaverKRX(code) {
+  const base = `https://polling.finance.naver.com/api/realtime/domestic/stock/${code}`;
+  const PROXY_FNS = [
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`, // allorigins (네이버 CORS 우회 확인됨)
+    u => u,                                                             // 직접
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,
+    u => `https://thingproxy.freeboard.io/fetch/${u}`,
+  ];
+  for (const proxyFn of PROXY_FNS) {
+    try {
+      const r = await fetchWithTimeout(proxyFn(base), 7000);
+      if (!r.ok) continue;
+      const d = await r.json();
+      const item = d?.datas?.[0];
+      if (!item) continue;
+      const p = parseFloat(String(item.closePrice ?? item.nv ?? '').replace(/,/g, ''));
+      if (p > 0) {
+        console.log(`[주가] ${code} = ${p} (KRW) via 네이버 실시간`);
+        return { price: p, currency: 'KRW' };
+      }
+    } catch(e) { /* 다음 프록시 시도 */ }
+  }
+  return null;
+}
+
+// 단일 종목 가격 조회 — 국내주식은 네이버 실시간 우선, 그 외/실패 시 Yahoo v8 chart
 async function fetchOneTicker(ticker) {
+  // KRX 종목 (예: 005930.KS, 484790.KS, 123456.KQ) → 네이버 실시간
+  const krx = ticker.match(/^(\d{6})\.(KS|KQ)$/);
+  if (krx) {
+    const nv = await fetchNaverKRX(krx[1]);
+    if (nv) return nv;
+    console.warn(`[주가] ${ticker} 네이버 실패 → Yahoo(지연) 폴백`);
+  }
   const HOSTS = ['query1', 'query2'];
   const PROXY_FNS = [
     u => u,                                                            // 직접
@@ -493,18 +526,19 @@ async function fetchPrices() {
 }
 
 async function fetchRate() {
+  // 1순위: Yahoo Finance USDKRW=X (실시간)
+  try {
+    const r2 = await fetchOneTicker('USDKRW=X');
+    if (r2?.price) { console.log('[환율] USD/KRW =', r2.price, '(Yahoo 실시간)'); return r2.price; }
+  } catch(e) {}
+  // 폴백: er-api (1일 1회 갱신)
   try {
     const ctrl = new AbortController();
     const tid = setTimeout(() => ctrl.abort(), 7000);
     const r = await fetch('https://open.er-api.com/v6/latest/USD', { signal: ctrl.signal });
     clearTimeout(tid);
     const d = await r.json();
-    if (d?.rates?.KRW) { console.log('[환율] USD/KRW =', d.rates.KRW); return d.rates.KRW; }
-  } catch(e) {}
-  // 폴백: Yahoo Finance USDKRW
-  try {
-    const r2 = await fetchOneTicker('USDKRW=X');
-    if (r2?.price) return r2.price;
+    if (d?.rates?.KRW) { console.log('[환율] USD/KRW =', d.rates.KRW, '(er-api)'); return d.rates.KRW; }
   } catch(e) {}
   return null;
 }
@@ -617,7 +651,7 @@ function renderDash() {
   document.getElementById('c0').innerHTML = `
     ${!has ? `<div class="warn">⚠️ 실시간 시세 연결 중입니다. 잠시 후 새로고침을 눌러주세요.</div>` : ''}
     <div class="sh">
-      <div class="stitle">📊 월송그룹 통합 포트폴리오 <small>유앤김 자산관리 | 4개 법인 체결기준</small></div>
+      <div class="stitle">📊 월송그룹 통합 포트폴리오 <small>유앤김 자산관리 | 4개 법인 체결기준 | 국내: 네이버 실시간 · 해외: Yahoo</small></div>
       <span class="pill ${has?'pill-live':'pill-load'}">${has?'🟢 실시간':'⚪ 로딩중'}</span>
     </div>
     <div class="cards">
