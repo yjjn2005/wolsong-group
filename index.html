@@ -204,42 +204,76 @@ const ENT_KEYS = ['hankyu','moon','company','tnc'];
 let ST = { prices:{}, rate:null, updated:null, loading:false };
 
 // ══════════════════════════════════════════════════════
-//  API — Yahoo Finance + ExchangeRate
+//  API — Yahoo Finance v8 chart (개별 종목) + ExchangeRate
+//  근거: v7 배치 → Yahoo 503, corsproxy → 401, allorigins → Yahoo 오류 래핑
+//  v8 chart API를 종목별로 개별 요청하고 실제 데이터 유효성 검증
 // ══════════════════════════════════════════════════════
-const PROXIES = [
-  url => url,                                              // direct
-  url => `https://corsproxy.io/?url=${encodeURIComponent(url)}`,
-  url => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`,
-];
 
-async function tryFetch(url, timeout=9000) {
-  for (const proxy of PROXIES) {
-    try {
-      const r = await fetch(proxy(url), { signal: AbortSignal.timeout(timeout) });
-      if (r.ok) return await r.json();
-    } catch(e) {}
-  }
-  throw new Error('All proxies failed: ' + url);
+// AbortController 기반 타임아웃 (AbortSignal.timeout 호환성 문제 회피)
+function fetchWithTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(tid));
 }
 
+// 단일 종목 가격 조회 — v8 chart API + 4개 프록시 + 2개 Yahoo 호스트
+async function fetchOneTicker(ticker) {
+  const HOSTS = ['query1', 'query2'];
+  const PROXY_FNS = [
+    u => u,                                                            // 직접
+    u => `https://corsproxy.io/?url=${encodeURIComponent(u)}`,        // corsproxy
+    u => `https://api.allorigins.win/raw?url=${encodeURIComponent(u)}`,// allorigins
+    u => `https://thingproxy.freeboard.io/fetch/${u}`,                // thingproxy
+  ];
+
+  for (const host of HOSTS) {
+    const base = `https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?interval=1d&range=1d&includePrePost=false`;
+    for (const proxyFn of PROXY_FNS) {
+      try {
+        const r = await fetchWithTimeout(proxyFn(base), 7000);
+        if (!r.ok) continue;
+        const data = await r.json();
+        const meta  = data?.chart?.result?.[0]?.meta;
+        const price = meta?.regularMarketPrice;
+        const cur   = meta?.currency;
+        // 실제 숫자 가격인지 엄격 검증
+        if (typeof price === 'number' && price > 0) {
+          console.log(`[주가] ${ticker} = ${price} (${cur}) via ${host}`);
+          return { price, currency: cur };
+        }
+      } catch(e) { /* 다음 프록시 시도 */ }
+    }
+  }
+  console.warn(`[주가] ${ticker} 조회 실패 — 모든 프록시 소진`);
+  return null;
+}
+
+// 전체 종목 병렬 조회
 async function fetchPrices() {
   const tickers = [...new Set(ENT_KEYS.flatMap(k => ENT[k].holdings.map(h => h.ticker)))];
-  // Yahoo Finance v7 quote (best CORS support)
-  const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${tickers.join(',')}&fields=regularMarketPrice,symbol,currency`;
-  const d = await tryFetch(url);
+  console.log('[주가] 조회 시작:', tickers);
+  const settled = await Promise.allSettled(tickers.map(t => fetchOneTicker(t)));
   const out = {};
-  (d?.quoteResponse?.result || []).forEach(q => { out[q.symbol] = { price: q.regularMarketPrice, currency: q.currency }; });
+  settled.forEach((r, i) => {
+    if (r.status === 'fulfilled' && r.value) out[tickers[i]] = r.value;
+  });
+  console.log('[주가] 조회 결과:', out);
   return out;
 }
 
 async function fetchRate() {
   try {
-    const d = await tryFetch('https://open.er-api.com/v6/latest/USD', 7000);
-    if (d?.rates?.KRW) return d.rates.KRW;
+    const ctrl = new AbortController();
+    const tid = setTimeout(() => ctrl.abort(), 7000);
+    const r = await fetch('https://open.er-api.com/v6/latest/USD', { signal: ctrl.signal });
+    clearTimeout(tid);
+    const d = await r.json();
+    if (d?.rates?.KRW) { console.log('[환율] USD/KRW =', d.rates.KRW); return d.rates.KRW; }
   } catch(e) {}
+  // 폴백: Yahoo Finance USDKRW
   try {
-    const d = await tryFetch('https://query1.finance.yahoo.com/v7/finance/quote?symbols=USDKRW%3DX&fields=regularMarketPrice');
-    return d?.quoteResponse?.result?.[0]?.regularMarketPrice || null;
+    const r2 = await fetchOneTicker('USDKRW=X');
+    if (r2?.price) return r2.price;
   } catch(e) {}
   return null;
 }
