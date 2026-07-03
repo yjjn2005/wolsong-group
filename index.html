@@ -139,23 +139,29 @@ tbody tr:hover td{background:rgba(59,130,246,.05)}
   </div>
 </header>
 
-<!-- 종목 추가 모달 -->
+<!-- 종목 추가/수정 모달 -->
 <div id="modal-add" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
   <div class="modal-box">
-    <div class="modal-title">➕ 종목 추가</div>
+    <div class="modal-title" id="modal-title">➕ 종목 매수 (추가)</div>
     <input type="hidden" id="modal-ek">
+    <input type="hidden" id="modal-idx">
     <div class="form-row"><label>종목명 *</label><input id="f-name" type="text" placeholder="예: 삼성전자"></div>
-    <div class="form-row"><label>티커 *</label><input id="f-ticker" type="text" placeholder="예: 005930.KS"></div>
+    <div class="form-row"><label>종목번호 (국내주식 6자리)</label><input id="f-code" type="text" placeholder="예: 005930 — 입력 시 티커 자동생성" oninput="syncTicker()"></div>
+    <div class="form-row"><label>티커 *</label><input id="f-ticker" type="text" placeholder="예: 005930.KS / AAPL / TLTW"></div>
     <div class="form-row"><label>통화</label>
       <select id="f-cur"><option value="KRW">KRW (원화)</option><option value="USD">USD (달러)</option></select>
     </div>
-    <div class="form-row"><label>수량 *</label><input id="f-qty" type="number" min="0" placeholder="0"></div>
+    <div class="form-row"><label>수량 *</label><input id="f-qty" type="number" min="0" step="any" placeholder="0"></div>
     <div class="form-row"><label>평균단가 *</label><input id="f-avgp" type="number" min="0" step="any" placeholder="0"></div>
-    <div class="form-row"><label>매수금액(원화) *</label><input id="f-cost" type="number" min="0" placeholder="0"></div>
+    <div class="form-row"><label>매수금액(원화) — 비우면 수량×단가로 자동계산</label><input id="f-cost" type="number" min="0" placeholder="자동계산"></div>
     <div class="form-row"><label>계좌 (선택)</label><input id="f-acct" type="text" placeholder="예: 신한 160-11-049083"></div>
+    <div class="form-row" style="display:flex;align-items:center;gap:8px">
+      <input type="checkbox" id="f-synccash" checked style="width:auto">
+      <label for="f-synccash" style="margin:0;text-transform:none;font-size:12px;color:var(--text)">💰 현금 자동 연동 (매수·수정 금액만큼 현금 자동 증감)</label>
+    </div>
     <div class="modal-actions">
       <button class="btn btn-cancel" onclick="closeModal()">취소</button>
-      <button class="btn btn-add-holding" onclick="submitAdd()">추가</button>
+      <button class="btn btn-add-holding" id="modal-submit" onclick="submitModal()">매수 추가</button>
     </div>
   </div>
 </div>
@@ -284,36 +290,99 @@ function resetData() {
   location.reload();
 }
 
+// 종목번호(6자리) 입력 → 티커 자동생성
+function syncTicker() {
+  const code = document.getElementById('f-code').value.trim();
+  const t = document.getElementById('f-ticker');
+  if (/^\d{6}$/.test(code) && (!t.value.trim() || /^\d{6}\.(KS|KQ)$/.test(t.value.trim()))) {
+    t.value = code + '.KS';
+  }
+}
+
 // 모달 열기/닫기
 function openAddModal(ek) {
   document.getElementById('modal-ek').value = ek;
-  ['f-name','f-ticker','f-qty','f-avgp','f-cost','f-acct'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('modal-idx').value = '';
+  ['f-name','f-code','f-ticker','f-qty','f-avgp','f-cost','f-acct'].forEach(id => document.getElementById(id).value = '');
   document.getElementById('f-cur').value = 'KRW';
+  document.getElementById('f-synccash').checked = true;
+  document.getElementById('modal-title').textContent = '➕ 종목 매수 (추가)';
+  document.getElementById('modal-submit').textContent = '매수 추가';
+  document.getElementById('modal-add').style.display = 'flex';
+}
+function openEditModal(ek, idx) {
+  const h = ENT[ek].holdings[idx];
+  if (!h) return;
+  document.getElementById('modal-ek').value = ek;
+  document.getElementById('modal-idx').value = idx;
+  document.getElementById('f-name').value = h.name;
+  document.getElementById('f-code').value = h.code || '';
+  document.getElementById('f-ticker').value = h.ticker;
+  document.getElementById('f-cur').value = h.cur;
+  document.getElementById('f-qty').value = h.qty;
+  document.getElementById('f-avgp').value = h.avgP;
+  document.getElementById('f-cost').value = h.costKRW;
+  document.getElementById('f-acct').value = h.acct || '';
+  document.getElementById('f-synccash').checked = true;
+  document.getElementById('modal-title').textContent = '✏️ 종목 수정 (수량/단가 변동)';
+  document.getElementById('modal-submit').textContent = '수정 저장';
   document.getElementById('modal-add').style.display = 'flex';
 }
 function closeModal() {
   document.getElementById('modal-add').style.display = 'none';
 }
-function submitAdd() {
+function submitModal() {
   const ek   = document.getElementById('modal-ek').value;
+  const idxStr = document.getElementById('modal-idx').value;
   const name = document.getElementById('f-name').value.trim();
+  const code = document.getElementById('f-code').value.trim();
   const ticker = document.getElementById('f-ticker').value.trim().toUpperCase();
   const cur  = document.getElementById('f-cur').value;
   const qty  = parseFloat(document.getElementById('f-qty').value);
   const avgP = parseFloat(document.getElementById('f-avgp').value);
-  const costKRW = parseFloat(document.getElementById('f-cost').value);
+  let costKRW = parseFloat(document.getElementById('f-cost').value);
   const acct = document.getElementById('f-acct').value.trim();
+  const syncCash = document.getElementById('f-synccash').checked;
+  const rate = ST.rate || 1554.4;
 
-  if (!name || !ticker || isNaN(qty) || isNaN(avgP) || isNaN(costKRW)) {
-    alert('필수 항목(종목명, 티커, 수량, 평균단가, 매수금액)을 모두 입력해주세요.'); return;
+  if (!name || !ticker || isNaN(qty) || isNaN(avgP)) {
+    alert('필수 항목(종목명, 티커, 수량, 평균단가)을 모두 입력해주세요.'); return;
   }
-  const h = { name, ticker, qty, avgP, costKRW, cur, manual: true };
-  if (acct) h.acct = acct;
-  ENT[ek].holdings.push(h);
+  // 매수금액 미입력 시 자동계산 (수량×단가, USD는 환율 적용)
+  if (isNaN(costKRW)) {
+    costKRW = Math.round(cur === 'KRW' ? qty * avgP : qty * avgP * rate);
+  }
+
+  if (idxStr === '') {
+    // ── 신규 매수 ──
+    const h = { name, ticker, qty, avgP, costKRW, cur, manual: true };
+    if (code) h.code = code;
+    if (acct) h.acct = acct;
+    ENT[ek].holdings.push(h);
+    if (syncCash) {
+      if (cur === 'KRW') ENT[ek].krwCash -= costKRW;
+      else ENT[ek].usdCash -= qty * avgP;
+    }
+  } else {
+    // ── 기존 종목 수정 (수량/단가 변동) ──
+    const idx = parseInt(idxStr, 10);
+    const old = ENT[ek].holdings[idx];
+    if (!old) { closeModal(); return; }
+    if (syncCash) {
+      if (cur === 'KRW') {
+        ENT[ek].krwCash -= (costKRW - old.costKRW);           // 취득원가 증감분만큼 현금 증감
+      } else {
+        ENT[ek].usdCash -= (qty * avgP - old.qty * old.avgP); // USD 투자금 증감분
+      }
+    }
+    const h = { ...old, name, ticker, qty, avgP, costKRW, cur, edited: true };
+    if (code) h.code = code; else delete h.code;
+    if (acct) h.acct = acct; else delete h.acct;
+    ENT[ek].holdings[idx] = h;
+  }
   saveData();
   closeModal();
-  renderCurrent();  // 시세 조회 전에도 즉시 표시 (삭제 가능)
-  // 새 티커 가격 조회 후 렌더
+  renderCurrent();  // 시세 조회 전에도 즉시 표시
   fetchOneTicker(ticker).then(info => {
     if (info) ST.prices[ticker] = info;
     renderCurrent();
@@ -326,6 +395,19 @@ function deleteHolding(ek, idx) {
   if (!h) return;
   const tag = h.manual ? ' (수동입력)' : '';
   if (!confirm(`"${h.name}"${tag} 종목을 삭제하시겠습니까?`)) return;
+  // 매도 처리: 현금 반영 여부
+  const pInfo = ST.prices[h.ticker];
+  const rate = ST.rate || 1554.4;
+  const sellVal = h.cur === 'KRW'
+    ? (pInfo ? pInfo.price * h.qty : h.costKRW)
+    : (pInfo ? pInfo.price * h.qty : h.qty * h.avgP);
+  const valTxt = h.cur === 'KRW'
+    ? Math.round(sellVal).toLocaleString('ko-KR') + '원'
+    : '$' + sellVal.toLocaleString(undefined,{maximumFractionDigits:2});
+  if (confirm(`매도 처리하시겠습니까?\n\n[확인] = 매도금액 ${valTxt}을(를) 현금에 자동 반영\n[취소] = 현금 변동 없이 목록에서만 삭제`)) {
+    if (h.cur === 'KRW') ENT[ek].krwCash += sellVal;
+    else ENT[ek].usdCash += sellVal;
+  }
   ENT[ek].holdings.splice(idx, 1);
   saveData();
   renderCurrent();
@@ -520,7 +602,7 @@ function renderDash() {
     <tr>
       <td>
         <div style="font-weight:500">${h.name}${manualBadge(h)}</div>
-        <span class="badge">${h.ticker}</span>
+        <span class="badge">${h.code ? h.code + ' · ' : ''}${h.ticker}</span>
       </td>
       <td style="color:var(--muted);font-size:12px">${h.eIcon} ${h.eName}</td>
       <td>${h.qty.toLocaleString()}</td>
@@ -529,7 +611,7 @@ function renderDash() {
       <td>${eok(h.valKRW)}</td>
       <td class="${cls(h.pnl)}">${h.pnl==null?'-':sgn(h.pnl)+eok(h.pnl)}</td>
       <td class="${cls(h.pct)}">${h.pct==null?'-':sgn(h.pct)+pct(h.pct)}</td>
-      <td><button class="btn-del" onclick="deleteHolding('${h.eKey}',${h.idx})" title="삭제">🗑</button></td>
+      <td><button class="btn-edit-cash" onclick="openEditModal('${h.eKey}',${h.idx})" title="수량/단가 수정">✏️</button><button class="btn-del" onclick="deleteHolding('${h.eKey}',${h.idx})" title="매도/삭제">🗑</button></td>
     </tr>`).join('');
 
   document.getElementById('c0').innerHTML = `
@@ -614,7 +696,7 @@ function renderEnt(ek) {
     <tr>
       <td>
         <div style="font-weight:500">${h.name}${manualBadge(h)}</div>
-        <span class="badge">${h.ticker}</span>
+        <span class="badge">${h.code ? h.code + ' · ' : ''}${h.ticker}</span>
       </td>
       ${hasAcct ? `<td style="color:var(--muted);font-size:11px">${h.acct||'-'}</td>` : ''}
       <td>${h.cur}</td>
@@ -625,7 +707,7 @@ function renderEnt(ek) {
       <td>${eok(h.costKRW)}</td>
       <td class="${cls(h.pnl)}">${h.pnl==null?'-':sgn(h.pnl)+eok(h.pnl)}</td>
       <td class="${cls(h.pct)}">${h.pct==null?'-':sgn(h.pct)+pct(h.pct)}</td>
-      <td><button class="btn-del" onclick="deleteHolding('${ek}',${h.idx})" title="삭제">🗑</button></td>
+      <td><button class="btn-edit-cash" onclick="openEditModal('${ek}',${h.idx})" title="수량/단가 수정">✏️</button><button class="btn-del" onclick="deleteHolding('${ek}',${h.idx})" title="매도/삭제">🗑</button></td>
     </tr>`).join('');
 
   const noData = e.hs.length === 0 && has;
@@ -663,8 +745,8 @@ function renderEnt(ek) {
     <div class="acc-info">📋 계좌번호: ${e.accounts.join('&nbsp;&nbsp;|&nbsp;&nbsp;')}</div>
 
     <div class="sh">
-      <div class="stitle">보유 종목 현황</div>
-      <button class="btn btn-add-row" onclick="openAddModal('${ek}')">➕ 종목 추가</button>
+      <div class="stitle">보유 종목 현황 <small>✏️ 수량/단가 수정 · 🗑 매도/삭제 — 현금 자동 연동</small></div>
+      <button class="btn btn-add-row" onclick="openAddModal('${ek}')">➕ 종목 매수</button>
     </div>
     ${noData ? `<div class="info">ℹ️ 보유 종목이 없습니다. [➕ 종목 추가]로 등록하세요.</div>` : ''}
     <div class="tbl-wrap" style="margin-bottom:22px">
@@ -674,7 +756,7 @@ function renderEnt(ek) {
           ${hasAcct?'<th>계좌</th>':''}
           <th>통화</th><th>수량</th><th>평균단가</th>
           <th>현재가(실시간)</th><th>평가금액</th><th>매수금액</th>
-          <th>평가손익</th><th>수익률</th><th>삭제</th>
+          <th>평가손익</th><th>수익률</th><th>관리</th>
         </tr></thead>
         <tbody>
           ${holdRows}
