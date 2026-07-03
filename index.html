@@ -101,6 +101,29 @@ tbody tr:hover td{background:rgba(59,130,246,.05)}
   .header-title{font-size:14px}
   .tab{padding:10px 12px;font-size:12px}
 }
+
+/* ── MODAL ── */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:1000;display:flex;align-items:center;justify-content:center;padding:16px}
+.modal-box{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;width:100%;max-width:460px;max-height:90vh;overflow-y:auto}
+.modal-title{font-size:15px;font-weight:700;margin-bottom:18px}
+.form-row{margin-bottom:14px}
+.form-row label{display:block;font-size:11px;color:var(--muted);margin-bottom:5px;text-transform:uppercase;letter-spacing:.4px}
+.form-row input,.form-row select{width:100%;background:var(--surface2);border:1px solid var(--border);border-radius:7px;padding:8px 10px;color:var(--text);font-size:13px;outline:none}
+.form-row input:focus,.form-row select:focus{border-color:var(--primary)}
+.form-row select option{background:var(--surface2)}
+.modal-actions{display:flex;gap:10px;justify-content:flex-end;margin-top:18px}
+.btn-cancel{background:var(--surface2);color:var(--muted);border:1px solid var(--border)}
+.btn-cancel:hover{color:var(--text)}
+.btn-add-holding{background:var(--green);color:#fff}
+.btn-add-holding:hover{filter:brightness(1.12)}
+.btn-del{background:none;border:none;cursor:pointer;font-size:13px;padding:2px 6px;border-radius:4px;color:var(--muted);transition:all .15s}
+.btn-del:hover{background:rgba(239,68,68,.15);color:var(--red)}
+.btn-edit-cash{background:none;border:none;cursor:pointer;font-size:12px;padding:1px 5px;color:var(--muted);transition:all .15s;margin-left:6px;vertical-align:middle}
+.btn-edit-cash:hover{color:var(--primary)}
+.btn-add-row{background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.3);color:var(--primary);padding:6px 14px;border-radius:7px;cursor:pointer;font-size:12px;font-weight:600;transition:all .2s}
+.btn-add-row:hover{background:rgba(59,130,246,.22)}
+.btn-reset{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3);padding:6px 12px;border-radius:7px;cursor:pointer;font-size:11px;font-weight:600;transition:all .2s}
+.btn-reset:hover{background:rgba(239,68,68,.25)}
 </style>
 </head>
 <body>
@@ -111,8 +134,30 @@ tbody tr:hover td{background:rgba(59,130,246,.05)}
     <div class="rate-box">USD/KRW &nbsp;<b id="rate-disp">로딩중...</b></div>
     <div class="upd" id="upd-time">-</div>
     <button class="btn btn-ref" id="btn-ref" onclick="refreshAll()">⟳ 새로고침</button>
+    <button class="btn btn-reset" onclick="resetData()">🗑 초기화</button>
   </div>
 </header>
+
+<!-- 종목 추가 모달 -->
+<div id="modal-add" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeModal()">
+  <div class="modal-box">
+    <div class="modal-title">➕ 종목 추가</div>
+    <input type="hidden" id="modal-ek">
+    <div class="form-row"><label>종목명 *</label><input id="f-name" type="text" placeholder="예: 삼성전자"></div>
+    <div class="form-row"><label>티커 *</label><input id="f-ticker" type="text" placeholder="예: 005930.KS"></div>
+    <div class="form-row"><label>통화</label>
+      <select id="f-cur"><option value="KRW">KRW (원화)</option><option value="USD">USD (달러)</option></select>
+    </div>
+    <div class="form-row"><label>수량 *</label><input id="f-qty" type="number" min="0" placeholder="0"></div>
+    <div class="form-row"><label>평균단가 *</label><input id="f-avgp" type="number" min="0" step="any" placeholder="0"></div>
+    <div class="form-row"><label>매수금액(원화) *</label><input id="f-cost" type="number" min="0" placeholder="0"></div>
+    <div class="form-row"><label>계좌 (선택)</label><input id="f-acct" type="text" placeholder="예: 신한 160-11-049083"></div>
+    <div class="modal-actions">
+      <button class="btn btn-cancel" onclick="closeModal()">취소</button>
+      <button class="btn btn-add-holding" onclick="submitAdd()">추가</button>
+    </div>
+  </div>
+</div>
 
 <nav class="tabs">
   <div class="tab active" onclick="showTab(0)">📊 통합 대시보드</div>
@@ -200,6 +245,103 @@ const ENT = {
   },
 };
 const ENT_KEYS = ['hankyu','moon','company','tnc'];
+
+// ══════════════════════════════════════════════════════
+//  LOCALSTORAGE — 수동 수정 데이터 저장/불러오기
+// ══════════════════════════════════════════════════════
+const LS_KEY = 'wolsong_data';
+
+function saveData() {
+  const out = {};
+  ENT_KEYS.forEach(k => {
+    out[k] = {
+      krwCash: ENT[k].krwCash,
+      usdCash: ENT[k].usdCash,
+      holdings: ENT[k].holdings.map(h => ({...h})),
+    };
+  });
+  localStorage.setItem(LS_KEY, JSON.stringify(out));
+}
+
+function loadData() {
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return;
+    const saved = JSON.parse(raw);
+    ENT_KEYS.forEach(k => {
+      if (!saved[k]) return;
+      if (typeof saved[k].krwCash === 'number') ENT[k].krwCash = saved[k].krwCash;
+      if (typeof saved[k].usdCash === 'number') ENT[k].usdCash = saved[k].usdCash;
+      if (Array.isArray(saved[k].holdings)) ENT[k].holdings = saved[k].holdings;
+    });
+  } catch(e) { console.warn('[localStorage] 로드 실패', e); }
+}
+
+function resetData() {
+  if (!confirm('초기화하면 수동으로 추가/수정한 내용이 모두 삭제됩니다.\n계속하시겠습니까?')) return;
+  localStorage.removeItem(LS_KEY);
+  location.reload();
+}
+
+// 모달 열기/닫기
+function openAddModal(ek) {
+  document.getElementById('modal-ek').value = ek;
+  ['f-name','f-ticker','f-qty','f-avgp','f-cost','f-acct'].forEach(id => document.getElementById(id).value = '');
+  document.getElementById('f-cur').value = 'KRW';
+  document.getElementById('modal-add').style.display = 'flex';
+}
+function closeModal() {
+  document.getElementById('modal-add').style.display = 'none';
+}
+function submitAdd() {
+  const ek   = document.getElementById('modal-ek').value;
+  const name = document.getElementById('f-name').value.trim();
+  const ticker = document.getElementById('f-ticker').value.trim().toUpperCase();
+  const cur  = document.getElementById('f-cur').value;
+  const qty  = parseFloat(document.getElementById('f-qty').value);
+  const avgP = parseFloat(document.getElementById('f-avgp').value);
+  const costKRW = parseFloat(document.getElementById('f-cost').value);
+  const acct = document.getElementById('f-acct').value.trim();
+
+  if (!name || !ticker || isNaN(qty) || isNaN(avgP) || isNaN(costKRW)) {
+    alert('필수 항목(종목명, 티커, 수량, 평균단가, 매수금액)을 모두 입력해주세요.'); return;
+  }
+  const h = { name, ticker, qty, avgP, costKRW, cur };
+  if (acct) h.acct = acct;
+  ENT[ek].holdings.push(h);
+  saveData();
+  closeModal();
+  // 새 티커 가격 조회 후 렌더
+  fetchOneTicker(ticker).then(info => {
+    if (info) ST.prices[ticker] = info;
+    renderCurrent();
+    renderDash();
+  });
+}
+
+function deleteHolding(ek, idx) {
+  const h = ENT[ek].holdings[idx];
+  if (!confirm(`"${h.name}" 종목을 삭제하시겠습니까?`)) return;
+  ENT[ek].holdings.splice(idx, 1);
+  saveData();
+  renderCurrent();
+  if (curTab === 0) renderDash();
+}
+
+function editCash(ek, type) {
+  const e = ENT[ek];
+  const cur = type === 'krw' ? e.krwCash : e.usdCash;
+  const label = type === 'krw' ? '원화 현금 (원)' : '외화 현금 (USD)';
+  const val = prompt(`${label}\n현재값: ${cur}`, cur);
+  if (val === null) return;
+  const num = parseFloat(val.replace(/,/g,''));
+  if (isNaN(num)) { alert('숫자를 입력해주세요.'); return; }
+  if (type === 'krw') ENT[ek].krwCash = num;
+  else ENT[ek].usdCash = num;
+  saveData();
+  renderCurrent();
+  if (curTab === 0) renderDash();
+}
 
 // ══════════════════════════════════════════════════════
 //  STATE
@@ -458,7 +600,7 @@ function renderEnt(ek) {
   const has  = Object.keys(ST.prices).length > 0;
   const hasAcct = e.holdings.some(h => h.acct);
 
-  const holdRows = e.hs.map(h => `
+  const holdRows = e.hs.map((h, idx) => `
     <tr>
       <td>
         <div style="font-weight:500">${h.name}</div>
@@ -473,6 +615,7 @@ function renderEnt(ek) {
       <td>${eok(h.costKRW)}</td>
       <td class="${cls(h.pnl)}">${sgn(h.pnl)}${eok(h.pnl)}</td>
       <td class="${cls(h.pct)}">${sgn(h.pct)}${pct(h.pct)}</td>
+      <td><button class="btn-del" onclick="deleteHolding('${ek}',${idx})" title="삭제">🗑</button></td>
     </tr>`).join('');
 
   const noData = e.hs.length === 0 && has;
@@ -509,7 +652,10 @@ function renderEnt(ek) {
 
     <div class="acc-info">📋 계좌번호: ${e.accounts.join('&nbsp;&nbsp;|&nbsp;&nbsp;')}</div>
 
-    <div class="sh"><div class="stitle">보유 종목 현황</div></div>
+    <div class="sh">
+      <div class="stitle">보유 종목 현황</div>
+      <button class="btn btn-add-row" onclick="openAddModal('${ek}')">➕ 종목 추가</button>
+    </div>
     ${noData ? `<div class="info">ℹ️ 실시간 가격을 불러오는 중입니다...</div>` : ''}
     <div class="tbl-wrap" style="margin-bottom:22px">
       <table>
@@ -518,7 +664,7 @@ function renderEnt(ek) {
           ${hasAcct?'<th>계좌</th>':''}
           <th>통화</th><th>수량</th><th>평균단가</th>
           <th>현재가(실시간)</th><th>평가금액</th><th>매수금액</th>
-          <th>평가손익</th><th>수익률</th>
+          <th>평가손익</th><th>수익률</th><th></th>
         </tr></thead>
         <tbody>
           ${holdRows}
@@ -529,6 +675,7 @@ function renderEnt(ek) {
             <td>${eok(e.secCost)}</td>
             <td class="${cls(e.pnl)}">${sgn(e.pnl)}${eok(e.pnl)}</td>
             <td class="${cls(e.pct)}">${sgn(e.pct)}${pct(e.pct)}</td>
+            <td></td>
           </tr>
         </tbody>
       </table>
@@ -539,12 +686,12 @@ function renderEnt(ek) {
     <div class="cards">
       <div class="card">
         <div class="clabel">원화 현금</div>
-        <div class="cval" style="font-size:18px">${full(e.krwCash)}</div>
+        <div class="cval" style="font-size:18px">${full(e.krwCash)}<button class="btn-edit-cash" onclick="editCash('${ek}','krw')" title="수정">✏️</button></div>
         <div class="csub">CMA + 예수금 합계</div>
       </div>
       <div class="card">
         <div class="clabel">외화 예수금</div>
-        <div class="cval" style="font-size:18px">$${e.usdCash.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}</div>
+        <div class="cval" style="font-size:18px">$${e.usdCash.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}<button class="btn-edit-cash" onclick="editCash('${ek}','usd')" title="수정">✏️</button></div>
         <div class="csub">≈ ${full(e.usdKRW)}</div>
       </div>
       <div class="card">
@@ -608,6 +755,7 @@ async function refreshAll() {
 }
 
 // ── INIT ──
+loadData();              // localStorage 수동 데이터 로드
 renderDash();            // 초기 렌더 (데이터 없이)
 refreshAll();            // 즉시 데이터 로드
 setInterval(refreshAll, 60000); // 60초 자동 갱신
